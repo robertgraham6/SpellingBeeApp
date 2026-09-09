@@ -319,8 +319,8 @@ export const DB = {
       return { id: listId, name: listName, scope };
     },
 
-    // ── Manual word entry (creates a new child-scope list) ───────
-    async createManual(createdByUserId, childId, listName, words) {
+    // ── Manual word entry (creates a new child-scope or admin-scope list) ──
+    async createManual(createdByUserId, childId, listName, words, scope = 'child') {
       const rpcWords = words.map((w, idx) => ({
         word:                    w.word.trim(),
         normalizedWord:          normalizeWord(w.word),
@@ -334,14 +334,17 @@ export const DB = {
       const { data: listId, error } = await supabase.rpc('import_word_list', {
         p_created_by: createdByUserId,
         p_list_name:  listName,
-        p_scope:      'child',
-        p_owner_id:   childId,
+        p_scope:      scope,
+        p_owner_id:   scope === 'admin' ? null : childId,
         p_words:      rpcWords
       });
       if (error) throw error;
-      childListCacheInvalidate(childId);
-      wlCacheInvalidate(childId);
-      return { id: listId, name: listName, scope: 'child' };
+      if (scope === 'admin') adminListCacheInvalidate();
+      if (scope === 'child' && childId) {
+        childListCacheInvalidate(childId);
+        wlCacheInvalidate(childId);
+      }
+      return { id: listId, name: listName, scope };
     },
 
     // ── Assign an existing list as a child's active list ─────────
@@ -527,6 +530,23 @@ export const DB = {
         .limit(1).maybeSingle();
       if (error) throw error;
       return data?.word_lists?.name || null;
+    },
+
+    async getActiveAssignments(childIds) {
+      if (!childIds || !childIds.length) return {};
+      const { data, error } = await supabase
+        .from('user_word_lists')
+        .select('user_id, word_list_id, word_lists(name)')
+        .in('user_id', childIds)
+        .order('assigned_at', { ascending: false });
+      if (error) return {};
+      const map = {};
+      (data || []).forEach(r => {
+        if (!map[r.user_id]) {
+          map[r.user_id] = { listId: r.word_list_id, listName: r.word_lists?.name || null };
+        }
+      });
+      return map;
     },
 
     async getChildrenHistoryCounts(childIds) {

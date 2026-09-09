@@ -65,7 +65,9 @@ function AccountSwitcher({ profile, activeChild, childList, onSelectChild, onSwi
                 <p style={{ fontWeight: 700, fontSize: '0.85rem', margin: 0, color: 'var(--text)' }}>
                   {profile.name}
                 </p>
-                <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: 0 }}>Parent</p>
+                <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: 0 }}>
+                  {profile.role === 'admin' ? 'Admin' : 'Parent'}
+                </p>
               </div>
               {!activeChild && <span style={{ marginLeft: 'auto', color: 'var(--primary)', fontSize: '0.8rem' }}>✓</span>}
             </button>
@@ -84,7 +86,9 @@ function AccountSwitcher({ profile, activeChild, childList, onSelectChild, onSwi
                 <p style={{ fontWeight: 700, fontSize: '0.85rem', margin: 0, color: 'var(--text)' }}>
                   {child.name}
                 </p>
-                <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: 0 }}>Child</p>
+                <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: 0 }}>
+                  {child.role === 'admin' ? 'Admin' : 'Child'}
+                </p>
               </div>
               {activeChild?.id === child.id && <span style={{ marginLeft: 'auto', color: 'var(--primary)', fontSize: '0.8rem' }}>✓</span>}
             </button>

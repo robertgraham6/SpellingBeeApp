@@ -240,9 +240,9 @@ export default function Home() {
     setAssignListChild(null);
   }
 
-  // Admin accounts have no children — give them a clear signpost to their
-  // actual workspace rather than the confusing 'No children yet' empty state.
-  if (profile?.role === 'admin') {
+  // If admin has no child accounts yet, give them a clear signpost to their
+  // workspace, with an option to also add a child profile.
+  if (profile?.role === 'admin' && childList.length === 0) {
     return (
       <Layout>
         <div className="empty-state">
@@ -251,10 +251,14 @@ export default function Home() {
           <p style={{ marginBottom:24 }}>
             Your workspace is the shared word library.
           </p>
-          <Link to="/word-lists">
-            <button className="btn btn-primary">Go to Word Lists</button>
-          </Link>
+          <div style={{ display:'flex', gap:10, justifyContent:'center' }}>
+            <Link to="/word-lists">
+              <button className="btn btn-primary">Go to Word Lists</button>
+            </Link>
+            <button className="btn btn-ghost" onClick={() => setShowAdd(true)}>+ Add Child</button>
+          </div>
         </div>
+        {showAdd && <AddChildModal onClose={handleChildAdded} />}
       </Layout>
     );
   }

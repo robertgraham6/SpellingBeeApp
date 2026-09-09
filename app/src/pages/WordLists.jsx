@@ -658,6 +658,15 @@ function ParentWordLists({ profile }) {
   const { childList, applyImportedWordList, refreshWordListIfOnList } = useApp();
   const showToast = useToast();
 
+  // Top tab: 'shared' | child.id
+  const [selectedTab, setSelectedTab] = useState('shared');
+  // Target scope for import: 'shared' | 'child'
+  const [importTargetScope, setImportTargetScope] = useState('shared');
+  // Child ID targeted when importing (optional, for auto-assign)
+  const [importTargetChildId, setImportTargetChildId] = useState(null);
+  // Active assignments for children: { [childId]: { listId, listName } }
+  const [activeAssignments, setActiveAssignments] = useState({});
+
   const [adminLists,   setAdminLists]   = useState([]);
   // { childId: [listMeta, …] }
   const [childLists,   setChildLists]   = useState({});
@@ -666,66 +675,145 @@ function ParentWordLists({ profile }) {
   const [retryCount,   setRetryCount]   = useState(0);
   const [preview,      setPreview]      = useState(null);
   const [listName,     setListName]     = useState('');
-  const [selectedChild, setSelectedChild] = useState('');
   const [importing,    setImporting]    = useState(false);
   const [importMsg,    setImportMsg]    = useState('');
   const [deletingId,   setDeletingId]   = useState(null);
   const [fileError,    setFileError]    = useState('');
   const [confirmDialog, setConfirmDialog] = useState(null);
-  const [showAddWords, setShowAddWords] = useState(null); // child id | null
+  const [showAddWords, setShowAddWords] = useState(null); // 'shared' | child.id | null
   const [activeSection, setActiveSection] = useState('shared'); // 'shared'|'import'|'manual'
   // { word, listId } | null — word being edited
   const [editWord,      setEditWord]      = useState(null);
-  // listId | null — which child-scope list is expanded to show words
+  // listId | null — which list is expanded to show words
   const [expandedListId, setExpandedListId] = useState(null);
   const [expandedWords,  setExpandedWords]  = useState([]);
   const [expandLoading,  setExpandLoading]  = useState(false);
   const listWordsCache   = useRef({});
 
+  const [diffData, setDiffData] = useState(null);
+  const updateFileRef = useRef();
+  const updateTargetList = useRef(null);
+
+  const descTimers = useRef({});
+  useEffect(() => () => {
+    Object.values(descTimers.current).forEach(clearTimeout);
+  }, []);
+
   const { fileRef, handleFile } = useFilePicker(
-    parsed => { setFileError(''); setPreview(parsed); setListName(`Word List ${new Date().toLocaleDateString()}`); },
-    msg    => setFileError(msg)
+    parsed => {
+      setFileError('');
+      setPreview(parsed);
+      setListName(
+        importTargetScope === 'shared'
+          ? `Shared List ${new Date().toLocaleDateString()}`
+          : `Word List ${new Date().toLocaleDateString()}`
+      );
+    },
+    msg => setFileError(msg)
   );
 
-  // Stable key: re-fetch only when the set of child IDs actually changes, or
-  // when the user manually retries. Using the array reference directly would
-  // re-fire if AppContext ever reconstructs the array without changing membership.
   const childIdsKey = childList.map(c => c.id).join(',');
 
-  // Load admin lists + per-child lists on mount (retryCount bumps the dep to re-run)
+  // Load shared lists + per-child lists + active assignments
   useEffect(() => {
     setLoadError('');
-    if (!childList.length) { setLoading(false); return; }
     setLoading(true);
     Promise.all([
       DB.wordLists.getAdminLists(),
-      ...childList.map(c => DB.wordLists.getChildLists(c.id).then(lists => ({ childId: c.id, lists })))
-    ]).then(([admin, ...perChild]) => {
+      ...childList.map(c => DB.wordLists.getChildLists(c.id).then(lists => ({ childId: c.id, lists }))),
+      DB.wordLists.getActiveAssignments(childList.map(c => c.id))
+    ]).then(([admin, ...rest]) => {
       setAdminLists(admin);
+      const activeMap = rest[rest.length - 1] || {};
+      const perChild = rest.slice(0, rest.length - 1);
       const map = {};
       perChild.forEach(({ childId, lists }) => { map[childId] = lists; });
       setChildLists(map);
+      setActiveAssignments(activeMap);
     }).catch(e => setLoadError(e.message || 'Failed to load word lists.'))
       .finally(() => setLoading(false));
-    if (!selectedChild && childList.length > 0) setSelectedChild(childList[0].id);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [childIdsKey, retryCount]);
 
   async function confirmImport() {
-    if (!preview || !listName.trim() || !selectedChild) return;
+    if (!preview || !listName.trim()) return;
     setImporting(true); setImportMsg('');
     try {
-      const list = await DB.wordLists.import(profile.id, listName, preview.words, 'child', selectedChild);
-      const newEntry = { id: list.id, name: list.name, createdAt: new Date().toISOString(),
-        scope: 'child', wordCount: preview.words.length };
-      setChildLists(prev => ({ ...prev, [selectedChild]: [newEntry, ...(prev[selectedChild] || [])] }));
-      applyImportedWordList(preview.words, selectedChild);
-      setImportMsg(`✅ Imported ${preview.words.length} words for ${childList.find(c => c.id === selectedChild)?.name}.`);
+      if (importTargetScope === 'shared') {
+        const list = await DB.wordLists.import(profile.id, listName.trim(), preview.words, 'admin', null);
+        const newEntry = {
+          id: list.id,
+          name: list.name,
+          description: '',
+          createdAt: new Date().toISOString(),
+          scope: 'admin',
+          wordCount: preview.words.length,
+          activeChildCount: importTargetChildId ? 1 : 0
+        };
+        setAdminLists(prev => [newEntry, ...prev]);
+
+        if (importTargetChildId) {
+          await DB.wordLists.assignToChild(importTargetChildId, list.id);
+          applyImportedWordList(preview.words, importTargetChildId);
+          setActiveAssignments(prev => ({
+            ...prev,
+            [importTargetChildId]: { listId: list.id, listName: list.name }
+          }));
+          const targetChild = childList.find(c => c.id === importTargetChildId);
+          setImportMsg(`✅ Created shared library "${listName}" (${preview.words.length} words) and assigned it to ${targetChild?.name || 'child'}!`);
+          showToast?.(`Created shared library "${listName}"!`, 'success');
+        } else {
+          setImportMsg(`✅ Created shared library "${listName}" with ${preview.words.length} words.`);
+          showToast?.(`Created shared library "${listName}"!`, 'success');
+        }
+      } else {
+        const targetChildId = importTargetChildId || selectedTab;
+        if (!targetChildId || targetChildId === 'shared') return;
+        const list = await DB.wordLists.import(profile.id, listName.trim(), preview.words, 'child', targetChildId);
+        const newEntry = {
+          id: list.id,
+          name: list.name,
+          createdAt: new Date().toISOString(),
+          scope: 'child',
+          wordCount: preview.words.length
+        };
+        setChildLists(prev => ({ ...prev, [targetChildId]: [newEntry, ...(prev[targetChildId] || [])] }));
+        applyImportedWordList(preview.words, targetChildId);
+        setActiveAssignments(prev => ({
+          ...prev,
+          [targetChildId]: { listId: list.id, listName: list.name }
+        }));
+        const targetChild = childList.find(c => c.id === targetChildId);
+        setImportMsg(`✅ Imported ${preview.words.length} words for ${targetChild?.name || 'child'}.`);
+        showToast?.(`Imported list for ${targetChild?.name || 'child'}.`, 'success');
+      }
       setPreview(null);
       if (fileRef.current) fileRef.current.value = '';
     } catch (e) {
       setImportMsg('❌ Import failed: ' + e.message);
-    } finally { setImporting(false); }
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function handleAssignToChild(childId, list) {
+    setImporting(true); setImportMsg('');
+    try {
+      await DB.wordLists.assignToChild(childId, list.id);
+      applyImportedWordList([], childId);
+      setActiveAssignments(prev => ({
+        ...prev,
+        [childId]: { listId: list.id, listName: list.name }
+      }));
+      const targetChild = childList.find(c => c.id === childId);
+      const msg = `✅ "${list.name}" is now ${targetChild?.name || 'child'}'s active list.`;
+      setImportMsg(msg);
+      showToast?.(msg, 'success');
+    } catch (e) {
+      setImportMsg('❌ ' + e.message);
+      showToast?.('Could not assign list — ' + e.message, 'error');
+    } finally {
+      setImporting(false);
+    }
   }
 
   async function handleRename(list, newName) {
@@ -739,6 +827,7 @@ function ParentWordLists({ profile }) {
         });
         return next;
       });
+      showToast?.('Renamed list.', 'success');
     } catch (e) {
       showToast?.('Could not rename list — ' + e.message, 'error');
     }
@@ -756,9 +845,106 @@ function ParentWordLists({ profile }) {
           await DB.wordLists.delete(list.id, 'child', childId);
           setChildLists(prev => ({ ...prev, [childId]: (prev[childId] || []).filter(l => l.id !== list.id) }));
           setConfirmDialog(null);
+          showToast?.('List deleted.', 'info');
         } finally { setDeletingId(null); }
       },
     });
+  }
+
+  function handleDescriptionChange(listId, text) {
+    setAdminLists(prev => prev.map(l => l.id === listId ? { ...l, description: text } : l));
+    clearTimeout(descTimers.current[listId]);
+    descTimers.current[listId] = setTimeout(async () => {
+      try {
+        await DB.wordLists.updateDescription(listId, text, 'admin', null);
+      } catch (e) {
+        showToast?.('Could not save description — ' + e.message, 'error');
+      }
+    }, 800);
+  }
+
+  async function handleRenameAdminList(list, newName) {
+    if (!newName.trim()) return;
+    try {
+      await DB.wordLists.rename(list.id, newName.trim(), 'admin', null);
+      setAdminLists(prev => prev.map(l => l.id === list.id ? { ...l, name: newName.trim() } : l));
+      showToast?.('Renamed list.', 'success');
+    } catch (e) {
+      showToast?.('Could not rename list — ' + e.message, 'error');
+    }
+  }
+
+  function handleDeleteAdminList(list) {
+    setConfirmDialog({
+      title: '🗑️ Delete Shared Word List',
+      message: `Delete "${list.name}" from the shared library? This affects all users and cannot be undone.`,
+      confirmLabel: 'Delete',
+      variant: 'danger',
+      onConfirm: async () => {
+        setDeletingId(list.id);
+        try {
+          await DB.wordLists.delete(list.id, 'admin', null);
+          setAdminLists(prev => prev.filter(l => l.id !== list.id));
+          delete listWordsCache.current[list.id];
+          if (expandedListId === list.id) {
+            setExpandedListId(null);
+            setExpandedWords([]);
+          }
+          setConfirmDialog(null);
+          showToast?.('Shared list deleted.', 'info');
+        } catch (e) {
+          showToast?.('Could not delete list — ' + e.message, 'error');
+        } finally {
+          setDeletingId(null);
+        }
+      },
+    });
+  }
+
+  function handleUpdateFile(targetList, file) {
+    if (!file || !targetList) return;
+    const name = file.name.toLowerCase();
+    const process = async (data) => {
+      const parsed = parseToWords(data);
+      if (!parsed || parsed.length === 0) {
+        setFileError('No valid words found in file.');
+        return;
+      }
+      applyNormalization(parsed);
+      try {
+        const existingWords = await DB.wordLists.getListWords(targetList.id);
+        setDiffData({
+          listId: targetList.id,
+          listName: targetList.name,
+          existingWords,
+          incomingWords: parsed,
+        });
+      } catch (e) {
+        setFileError('Could not load current words for diff: ' + e.message);
+      }
+    };
+
+    if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+      const reader = new FileReader();
+      reader.onload = async e => {
+        const ExcelJS = (await import('exceljs')).default;
+        const wb = new ExcelJS.Workbook();
+        await wb.xlsx.load(e.target.result);
+        const ws = wb.worksheets[0];
+        const rows = [];
+        ws.eachRow(row => rows.push(row.values.slice(1)));
+        process(rows);
+      };
+      reader.readAsArrayBuffer(file);
+    } else {
+      const reader = new FileReader();
+      reader.onload = e => {
+        const text = e.target.result;
+        const delim = text.split('\n')[0].includes('|') ? '|' : ',';
+        process(parseDSV(text, delim));
+      };
+      reader.readAsText(file);
+    }
   }
 
   async function toggleWordList(listId) {
@@ -791,13 +977,32 @@ function ParentWordLists({ profile }) {
     refreshWordListIfOnList(listId);
   }
 
-  function handleWordsAdded(childId, newList) {
-    setChildLists(prev => ({
-      ...prev,
-      [childId]: [{ id: newList.id, name: newList.name,
-        createdAt: new Date().toISOString(), scope: 'child', wordCount: newList.wordCount },
-        ...(prev[childId] || [])]
-    }));
+  function handleWordsAdded(target, newList) {
+    if (target === 'shared' || newList.scope === 'admin') {
+      setAdminLists(prev => [
+        {
+          id: newList.id,
+          name: newList.name,
+          description: '',
+          createdAt: new Date().toISOString(),
+          scope: 'admin',
+          wordCount: newList.wordCount,
+          activeChildCount: 0
+        },
+        ...prev
+      ]);
+    } else if (target) {
+      setChildLists(prev => ({
+        ...prev,
+        [target]: [{
+          id: newList.id,
+          name: newList.name,
+          createdAt: new Date().toISOString(),
+          scope: 'child',
+          wordCount: newList.wordCount
+        }, ...(prev[target] || [])]
+      }));
+    }
   }
 
   if (loading)   return <div className="loading-screen"><div className="spinner" /></div>;
@@ -806,208 +1011,532 @@ function ParentWordLists({ profile }) {
       <div className="icon">⚠️</div>
       <h3>Could not load word lists</h3>
       <p style={{ marginBottom:20 }}>{loadError}</p>
-      <button className="btn btn-primary"
-        onClick={() => setRetryCount(n => n + 1)}>Try Again</button>
+      <button className="btn btn-primary" onClick={() => setRetryCount(n => n + 1)}>Try Again</button>
     </div>
   );
 
-  const activeChildObj = childList.find(c => c.id === selectedChild);
+  const isSharedTab = selectedTab === 'shared';
+  const currentChild = childList.find(c => c.id === selectedTab);
 
   return (
     <>
       <h1 style={{ marginBottom:6 }}>Word Lists</h1>
-      <p style={{ marginBottom:20 }}>Manage word lists for your children.</p>
+      <p style={{ marginBottom:20 }}>
+        {isSharedTab
+          ? 'Manage the shared library available to all users and children.'
+          : `Manage word lists and assignments for ${currentChild?.name || 'your child'}.`}
+      </p>
 
-      {childList.length === 0 ? (
-        <div className="empty-state">
-          <div className="icon">👧</div>
-          <h3>No children added yet</h3>
-          <p>Add a child from the Home page first.</p>
-        </div>
-      ) : (
-      <>
-      {/* ── Child selector tabs ── */}
+      {/* Admin overview metric panel */}
+      {profile?.role === 'admin' && isSharedTab && (
+        <AdminOverview />
+      )}
+
+      {/* ── Top Level Selector Tabs: Shared Library + Children ── */}
       <div style={{ display:'flex', gap:8, marginBottom:20, flexWrap:'wrap' }}>
+        <button
+          className={`btn btn-sm ${isSharedTab ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => {
+            setSelectedTab('shared');
+            setImportMsg('');
+            setFileError('');
+          }}>
+          📚 Shared Library ({adminLists.length})
+        </button>
         {childList.map(c => (
           <button key={c.id}
-            className={`btn btn-sm ${selectedChild === c.id ? 'btn-primary' : 'btn-ghost'}`}
-            onClick={() => setSelectedChild(c.id)}>
+            className={`btn btn-sm ${selectedTab === c.id ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => {
+              setSelectedTab(c.id);
+              setImportMsg('');
+              setFileError('');
+            }}>
             {c.avatar} {c.name}
           </button>
         ))}
       </div>
 
-      {/* ── Active list banner for selected child ── */}
-      {activeChildObj && (() => {
-        const activeName = (childLists[activeChildObj.id] || []).find(l => l.active)?.name
-          || adminLists.find(l => l.active)?.name;
-        return null; // active list shown via AssignListModal on Home
-      })()}
+      {/* Hidden file input for file uploads */}
+      <input ref={fileRef} type="file" accept=".csv,.txt,.xlsx,.xls"
+        style={{ display:'none' }} onChange={e => handleFile(e.target.files[0])} />
 
-      {/* ── Section tabs ── */}
-      {activeChildObj && (
-      <div style={{ display:'flex', gap:8, marginBottom:20 }}>
-        {[['shared','📚 Shared Library'],['import','📂 Import File'],['manual','✏️ Enter Words']].map(([id,label]) => (
-          <button key={id}
-            className={`btn btn-sm ${activeSection === id ? 'btn-primary' : 'btn-ghost'}`}
-            onClick={() => setActiveSection(id)}>{label}</button>
-        ))}
-      </div>
-      )}
+      {/* Hidden file input for "Update from File" (diff) */}
+      <input ref={updateFileRef} type="file" accept=".csv,.txt,.xlsx,.xls"
+        style={{ display:'none' }}
+        onChange={e => handleUpdateFile(updateTargetList.current, e.target.files[0])} />
 
-      {activeChildObj && activeSection === 'shared' && (
-      <div className="card" style={{ marginBottom:20 }}>
-        <h3 style={{ marginBottom:12 }}>📚 Shared Library</h3>
-        {adminLists.length === 0
-          ? <p style={{ fontSize:'0.85rem', color:'var(--text-muted)' }}>No shared lists available yet. Ask the admin to import one.</p>
-          : adminLists.map(list => (
-            <div key={list.id} style={{ padding:'12px 0', borderBottom:'1px solid var(--border)' }}>
-              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                <div style={{ flex:1 }}>
-                  <p style={{ fontWeight:700, margin:'0 0 2px' }}>{list.name}</p>
-                  {list.description && <p style={{ fontSize:'0.78rem', color:'var(--text)', margin:'0 0 2px' }}>{list.description}</p>}
-                  <p style={{ fontSize:'0.78rem', color:'var(--text-muted)', margin:0 }}>{list.wordCount ?? '?'} words</p>
-                </div>
-                <button className="btn btn-primary btn-sm"
-                  disabled={importing}
-                  onClick={async () => {
-                    setImporting(true); setImportMsg('');
-                    try {
-                      await DB.wordLists.assignToChild(selectedChild, list.id);
-                      applyImportedWordList([], selectedChild);
-                      setImportMsg(`✅ "${list.name}" is now ${activeChildObj.name}'s active list.`);
-                    } catch(e) { setImportMsg('❌ ' + e.message); }
-                    finally { setImporting(false); }
-                  }}>
-                  {importing ? '…' : 'Select This List'}
-                </button>
-              </div>
-            </div>
-          ))}
-        {importMsg && (
-          <div style={{ marginTop:12, padding:'10px 14px', borderRadius:8, fontSize:'0.88rem', fontWeight:600,
-            background: importMsg.startsWith('✅') ? '#e3fff2' : '#ffecec',
-            color: importMsg.startsWith('✅') ? 'var(--secondary)' : 'var(--danger)',
-            border: `1px solid ${importMsg.startsWith('✅') ? 'var(--secondary)' : 'var(--danger)'}` }}>
-            {importMsg}
-          </div>
-        )}
-      </div>
+      {/* Global Notifications */}
+      {importMsg && (
+        <div style={{ padding:'12px 16px', borderRadius:8, marginBottom:20,
+          fontSize:'0.9rem', fontWeight:600,
+          background: importMsg.startsWith('✅') ? '#e3fff2' : '#ffecec',
+          color:      importMsg.startsWith('✅') ? 'var(--secondary)' : 'var(--danger)',
+          border:    `1px solid ${importMsg.startsWith('✅') ? 'var(--secondary)' : 'var(--danger)'}` }}>
+          {importMsg}
+        </div>
       )}
 
-      {activeChildObj && activeSection === 'import' && (
-      <div className="card" style={{ marginBottom:20 }}>
-        <h3 style={{ marginBottom:12 }}>📂 Import Word List for {activeChildObj.avatar} {activeChildObj.name}</h3>
-        <input ref={fileRef} type="file" accept=".csv,.txt,.xlsx,.xls"
-          style={{ display:'none' }} onChange={e => handleFile(e.target.files[0])} />
-        <button className="btn btn-primary" onClick={() => fileRef.current?.click()}>Choose File</button>
-        {fileError && (
-          <div style={{ marginTop:12, padding:'10px 14px', borderRadius:8, fontSize:'0.88rem',
-            fontWeight:600, background:'#ffecec', color:'var(--danger)', border:'1px solid var(--danger)' }}>
-            ⚠️ {fileError}
-            <button onClick={() => setFileError('')} style={{ marginLeft:8, background:'none',
-              border:'none', cursor:'pointer', color:'inherit', fontWeight:700 }}>✕</button>
-          </div>
-        )}
-        {preview && (
-          <div style={{ marginTop:16 }}>
-            <ImportPreview
-              preview={preview} listName={listName} setListName={setListName}
-              onConfirm={confirmImport}
-              onCancel={() => { setPreview(null); if(fileRef.current) fileRef.current.value=''; }}
-              importing={importing}
-              notice={`This will be assigned to ${activeChildObj.name} as their active list.`} />
-          </div>
-        )}
-        {importMsg && (
-          <div style={{ marginTop:12, padding:'10px 14px', borderRadius:8, fontSize:'0.88rem', fontWeight:600,
-            background: importMsg.startsWith('✅') ? '#e3fff2' : '#ffecec',
-            color: importMsg.startsWith('✅') ? 'var(--secondary)' : 'var(--danger)',
-            border: `1px solid ${importMsg.startsWith('✅') ? 'var(--secondary)' : 'var(--danger)'}` }}>
-            {importMsg}
-          </div>
-        )}
-        {/* Personal lists for this child */}
-        {(childLists[selectedChild] || []).length > 0 && (
-          <div style={{ marginTop:20 }}>
-            <h4 style={{ marginBottom:10, fontSize:'0.9rem', color:'var(--text-muted)' }}>Previous imports</h4>
-            {(childLists[selectedChild] || []).map(list => (
-              <div key={list.id}>
-                <div style={{ display:'flex', alignItems:'center' }}>
-                  <div style={{ flex:1 }}>
-                    <ListRow list={{ ...list, ownerId: selectedChild }}
-                      deletingId={deletingId} onRename={handleRename}
-                      onDelete={l => handleDelete(l, selectedChild)} />
-                  </div>
-                  <button className="btn btn-ghost btn-sm" style={{ fontSize:'0.75rem' }}
-                    onClick={() => toggleWordList(list.id)}>
-                    {expandedListId === list.id ? '▲ Hide' : '▼ Edit Words'}
-                  </button>
-                </div>
-                {expandedListId === list.id && (
-                  <div style={{ padding:'8px 0 12px 12px' }}>
-                    {expandLoading ? <p style={{ color:'var(--text-muted)', fontSize:'0.85rem' }}>Loading…</p>
-                      : expandedWords.map(w => (
-                        <div key={w.wordId} style={{ display:'flex', alignItems:'center', gap:8,
-                          padding:'3px 0', borderBottom:'1px solid var(--border)' }}>
-                          <span style={{ flex:1, fontWeight:600, fontSize:'0.85rem' }}>{w.word}</span>
-                          <span style={{ fontSize:'0.78rem', color:'var(--text-muted)', flex:2,
-                            overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{w.definition}</span>
-                          <button className="btn btn-ghost btn-sm" style={{ fontSize:'0.72rem' }}
-                            onClick={() => setEditWord({ word: w, listId: list.id })}>✏️</button>
-                        </div>
-                      ))
-                    }
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {fileError && (
+        <div style={{ padding:'12px 16px', borderRadius:8, marginBottom:20,
+          fontSize:'0.9rem', fontWeight:600, background:'#ffecec',
+          color:'var(--danger)', border:'1px solid var(--danger)' }}>
+          ⚠️ {fileError}
+          <button onClick={() => setFileError('')} style={{ marginLeft:8, background:'none',
+            border:'none', cursor:'pointer', color:'inherit', fontWeight:700 }}>✕</button>
+        </div>
       )}
 
-      {activeChildObj && activeSection === 'manual' && (
-      <div className="card" style={{ marginBottom:20 }}>
-        <h3 style={{ marginBottom:12 }}>✏️ Enter Words for {activeChildObj.avatar} {activeChildObj.name}</h3>
-        <button className="btn btn-primary" onClick={() => setShowAddWords(selectedChild)}>
-          + Add Words Manually
-        </button>
-      </div>
-      )}
-      </>
-      )}
-      {!activeChildObj && (
-        <p style={{ color:'var(--text-muted)', fontSize:'0.88rem' }}>Select a child above to manage their word lists.</p>
-      )}
-
-      {showAddWords && (
-        <AddWordsModal
-          childId={showAddWords}
-          childName={childList.find(c => c.id === showAddWords)?.name || ''}
-          createdBy={profile.id}
-          onClose={() => setShowAddWords(null)}
-          onSaved={newList => { handleWordsAdded(showAddWords, newList); setShowAddWords(null); }}
+      {preview && (
+        <ImportPreview
+          preview={preview} listName={listName} setListName={setListName}
+          onConfirm={confirmImport}
+          onCancel={() => { setPreview(null); if (fileRef.current) fileRef.current.value = ''; }}
+          importing={importing}
+          notice={
+            importTargetScope === 'shared'
+              ? (importTargetChildId
+                  ? `This word list will be added to the Shared Library and assigned to ${childList.find(c => c.id === importTargetChildId)?.name || 'child'} as their active list.`
+                  : 'This word list will be added to the Shared Library and made available to all users.')
+              : `This will be assigned to ${currentChild?.name || 'child'} as their active list.`
+          }
         />
       )}
 
+      {/* ══════════════════════════════════════════════════════════════════════
+          VIEW 1: SHARED LIBRARY TAB
+          ══════════════════════════════════════════════════════════════════════ */}
+      {isSharedTab && (
+        <>
+          {/* Create a Shared Library import card */}
+          <div className="card" style={{ marginBottom:24, textAlign:'center' }}>
+            <div style={{ fontSize:'2.5rem', marginBottom:12 }}>📂</div>
+            <h3 style={{ marginBottom:8 }}>Create a Shared Library</h3>
+            <p style={{ fontSize:'0.88rem', color:'var(--text-muted)', marginBottom:16, maxWidth:580, margin:'0 auto 16px' }}>
+              Import a .csv, .txt, or .xlsx file to create a shared word list accessible to all users. Needs a <code>word</code> column. Optionally include <code>status</code>, <code>rating</code>, <code>normalized_word</code>, and <code>normalized_pronunciation</code> to import progress.
+            </p>
+            <div style={{ display:'flex', gap:10, justifyContent:'center', flexWrap:'wrap' }}>
+              <button className="btn btn-primary" onClick={() => {
+                setImportTargetScope('shared');
+                setImportTargetChildId(null);
+                fileRef.current?.click();
+              }}>
+                Choose File to Import
+              </button>
+              <button className="btn btn-outline" onClick={() => setShowAddWords('shared')}>
+                + Enter Words Manually
+              </button>
+            </div>
+          </div>
+
+          {/* Shared lists management card */}
+          <div className="card" style={{ marginBottom:20 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
+              <h3 style={{ margin:0 }}>📚 Shared Library Lists</h3>
+              <button className="btn btn-primary btn-sm" onClick={() => {
+                setImportTargetScope('shared');
+                setImportTargetChildId(null);
+                fileRef.current?.click();
+              }}>
+                + Import List
+              </button>
+            </div>
+
+            {adminLists.length === 0 ? (
+              <p style={{ fontSize:'0.85rem', color:'var(--text-muted)' }}>
+                No shared lists yet. Click "Choose File to Import" above to create one.
+              </p>
+            ) : (
+              adminLists.map(list => (
+                <div key={list.id} style={{ padding:'12px 0', borderBottom:'1px solid var(--border)', opacity: deletingId === list.id ? 0.4 : 1 }}>
+                  <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
+                    <div style={{ flex:1 }}>
+                      <ListRow list={{ ...list, scope:'admin' }}
+                        deletingId={deletingId}
+                        onRename={handleRenameAdminList}
+                        onDelete={handleDeleteAdminList}
+                        extra={
+                          <span style={{ fontSize:'0.78rem', color:'var(--text-muted)',
+                            background:'var(--bg)', padding:'2px 8px', borderRadius:50,
+                            border:'1px solid var(--border)', whiteSpace:'nowrap' }}>
+                            {list.activeChildCount || 0} active {list.activeChildCount === 1 ? 'child' : 'children'}
+                          </span>
+                        }
+                      />
+
+                      <textarea
+                        value={list.description || ''}
+                        onChange={e => handleDescriptionChange(list.id, e.target.value)}
+                        placeholder="Add a description (optional)…"
+                        rows={2}
+                        style={{ width:'100%', marginTop:6, padding:'6px 10px', borderRadius:8,
+                          border:'1px solid var(--border)', fontFamily:'var(--font)',
+                          fontSize:'0.82rem', resize:'vertical', background:'var(--bg)',
+                          color:'var(--text)' }} />
+
+                      <div style={{ display:'flex', gap:8, marginTop:6, alignItems:'center', flexWrap:'wrap' }}>
+                        <button className="btn btn-ghost btn-sm" style={{ fontSize:'0.78rem' }}
+                          onClick={() => toggleWordList(list.id)}>
+                          {expandedListId === list.id ? '▲ Hide words' : '▼ Edit words'}
+                        </button>
+                        <button className="btn btn-outline btn-sm" style={{ fontSize:'0.78rem' }}
+                          onClick={() => {
+                            updateTargetList.current = list;
+                            updateFileRef.current?.click();
+                          }}>
+                          🔄 Update from File
+                        </button>
+
+                        {/* Quick assign to child if children exist */}
+                        {childList.length > 0 && (
+                          <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:6 }}>
+                            <span style={{ fontSize:'0.78rem', color:'var(--text-muted)' }}>Assign to:</span>
+                            {childList.map(c => {
+                              const isActive = activeAssignments[c.id]?.listId === list.id;
+                              return (
+                                <button key={c.id}
+                                  className={`btn btn-sm ${isActive ? 'btn-primary' : 'btn-ghost'}`}
+                                  style={{ fontSize:'0.75rem', padding:'2px 8px' }}
+                                  disabled={isActive || importing}
+                                  onClick={() => handleAssignToChild(c.id, list)}>
+                                  {c.avatar} {c.name} {isActive ? '✓' : ''}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {expandedListId === list.id && (
+                    <div style={{ padding:'8px 0 16px 16px' }}>
+                      {expandLoading
+                        ? <p style={{ color:'var(--text-muted)', fontSize:'0.85rem' }}>Loading words…</p>
+                        : expandedWords.length === 0
+                          ? <p style={{ color:'var(--text-muted)', fontSize:'0.85rem' }}>No words.</p>
+                          : expandedWords.map(w => (
+                              <div key={w.wordId} style={{ display:'flex', alignItems:'center',
+                                gap:10, padding:'4px 0', borderBottom:'1px solid var(--border)' }}>
+                                <span style={{ flex:1, fontWeight:600, fontSize:'0.88rem' }}>
+                                  {w.word}
+                                  {w.hasOverride && <span style={{ color:'var(--warning)',
+                                    fontSize:'0.75rem', marginLeft:6 }}>✎ edited</span>}
+                                </span>
+                                <span style={{ fontSize:'0.78rem', color:'var(--text-muted)',
+                                  flex:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                                  {w.definition}
+                                </span>
+                                <button className="btn btn-ghost btn-sm"
+                                  style={{ fontSize:'0.75rem', flexShrink:0 }}
+                                  onClick={() => setEditWord({ word: w, listId: list.id })}>
+                                  ✏️
+                                </button>
+                              </div>
+                            ))
+                      }
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          VIEW 2: CHILD VIEW (WHEN A CHILD IS SELECTED)
+          ══════════════════════════════════════════════════════════════════════ */}
+      {!isSharedTab && currentChild && (
+        <>
+          {/* Active list status card */}
+          <div className="card" style={{ marginBottom:20, display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:12 }}>
+            <div>
+              <span style={{ fontSize:'0.8rem', textTransform:'uppercase', letterSpacing:1, color:'var(--text-muted)', fontWeight:700 }}>
+                {currentChild.avatar} {currentChild.name}'s Active Word List
+              </span>
+              <h3 style={{ margin:'4px 0 0', fontSize:'1.15rem' }}>
+                {activeAssignments[currentChild.id]?.listName
+                  ? `📚 ${activeAssignments[currentChild.id].listName}`
+                  : 'No active list assigned'}
+              </h3>
+            </div>
+            {activeAssignments[currentChild.id]?.listName ? (
+              <span className="badge badge-success" style={{ padding:'6px 12px', fontSize:'0.85rem' }}>
+                Active in Practice & Tests
+              </span>
+            ) : (
+              <span style={{ fontSize:'0.85rem', color:'var(--text-muted)' }}>
+                Select a list below to begin
+              </span>
+            )}
+          </div>
+
+          {/* Child sub-section tabs */}
+          <div style={{ display:'flex', gap:8, marginBottom:20 }}>
+            {[
+              ['shared', '📚 Shared Library'],
+              ['import', `📂 Import File for ${currentChild.name}`],
+              ['manual', `✏️ Enter Words`]
+            ].map(([id, label]) => (
+              <button key={id}
+                className={`btn btn-sm ${activeSection === id ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => setActiveSection(id)}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* ── CHILD SECTION 1: SHARED LIBRARY ── */}
+          {activeSection === 'shared' && (
+            <>
+              {/* Option to create a shared library import card right here! */}
+              <div className="card" style={{ marginBottom:20, border:'1px dashed var(--border)', background:'var(--bg)' }}>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:12 }}>
+                  <div>
+                    <h3 style={{ margin:'0 0 4px', fontSize:'1.05rem' }}>📂 Create a Shared Library List</h3>
+                    <p style={{ margin:0, fontSize:'0.85rem', color:'var(--text-muted)' }}>
+                      Import a .csv, .txt, or .xlsx file to add a list to the Shared Library and assign it to {currentChild.name}.
+                    </p>
+                  </div>
+                  <div style={{ display:'flex', gap:8 }}>
+                    <button className="btn btn-primary btn-sm" onClick={() => {
+                      setImportTargetScope('shared');
+                      setImportTargetChildId(currentChild.id);
+                      fileRef.current?.click();
+                    }}>
+                      Choose File to Import
+                    </button>
+                    <button className="btn btn-outline btn-sm" onClick={() => setShowAddWords('shared')}>
+                      + Enter Words Manually
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Shared lists list */}
+              <div className="card" style={{ marginBottom:20 }}>
+                <h3 style={{ marginBottom:14 }}>Available Shared Lists</h3>
+                {adminLists.length === 0 ? (
+                  <p style={{ fontSize:'0.85rem', color:'var(--text-muted)' }}>
+                    No shared lists in the library yet. Click "Choose File to Import" above to add one!
+                  </p>
+                ) : (
+                  adminLists.map(list => {
+                    const isActive = activeAssignments[currentChild.id]?.listId === list.id;
+                    return (
+                      <div key={list.id} style={{ padding:'12px 0', borderBottom:'1px solid var(--border)' }}>
+                        <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
+                          <div style={{ flex:1 }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                              <span style={{ fontWeight:600, fontSize:'0.95rem' }}>{list.name}</span>
+                              <span style={{ fontSize:'0.78rem', color:'var(--text-muted)' }}>
+                                {list.wordCount ?? '?'} words
+                              </span>
+                              {isActive && (
+                                <span style={{ fontSize:'0.75rem', fontWeight:700, color:'var(--secondary)',
+                                  background:'#e3fff2', border:'1px solid var(--secondary)',
+                                  padding:'1px 8px', borderRadius:50 }}>
+                                  ✓ Active List
+                                </span>
+                              )}
+                            </div>
+                            {list.description && (
+                              <p style={{ fontSize:'0.82rem', color:'var(--text-muted)', margin:'4px 0 0' }}>
+                                {list.description}
+                              </p>
+                            )}
+                            <div style={{ display:'flex', gap:8, marginTop:6 }}>
+                              <button className="btn btn-ghost btn-sm" style={{ fontSize:'0.75rem' }}
+                                onClick={() => toggleWordList(list.id)}>
+                                {expandedListId === list.id ? '▲ Hide words' : '▼ View words'}
+                              </button>
+                            </div>
+                          </div>
+
+                          <button className={`btn btn-sm ${isActive ? 'btn-ghost' : 'btn-primary'}`}
+                            disabled={isActive || importing}
+                            onClick={() => handleAssignToChild(currentChild.id, list)}>
+                            {isActive ? 'Current Active' : 'Select This List'}
+                          </button>
+                        </div>
+
+                        {expandedListId === list.id && (
+                          <div style={{ padding:'8px 0 12px 12px' }}>
+                            {expandLoading
+                              ? <p style={{ color:'var(--text-muted)', fontSize:'0.85rem' }}>Loading words…</p>
+                              : expandedWords.length === 0
+                                ? <p style={{ color:'var(--text-muted)', fontSize:'0.85rem' }}>No words.</p>
+                                : expandedWords.map(w => (
+                                    <div key={w.wordId} style={{ display:'flex', alignItems:'center', gap:8,
+                                      padding:'3px 0', borderBottom:'1px solid var(--border)' }}>
+                                      <span style={{ flex:1, fontWeight:600, fontSize:'0.85rem' }}>{w.word}</span>
+                                      <span style={{ fontSize:'0.78rem', color:'var(--text-muted)', flex:2,
+                                        overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                                        {w.definition}
+                                      </span>
+                                    </div>
+                                  ))
+                            }
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </>
+          )}
+
+          {/* ── CHILD SECTION 2: IMPORT PRIVATE FILE ── */}
+          {activeSection === 'import' && (
+            <div className="card" style={{ marginBottom:20 }}>
+              <h3 style={{ marginBottom:12 }}>
+                📂 Import Word List for {currentChild.name}
+              </h3>
+              <p style={{ fontSize:'0.88rem', color:'var(--text-muted)', marginBottom:16 }}>
+                Import a .csv, .txt, or .xlsx file specifically as {currentChild.name}'s active word list.
+              </p>
+              <button className="btn btn-primary" onClick={() => {
+                setImportTargetScope('child');
+                setImportTargetChildId(currentChild.id);
+                fileRef.current?.click();
+              }}>
+                Choose File
+              </button>
+
+              {/* Personal lists for kid */}
+              {(childLists[currentChild.id] || []).length > 0 && (
+                <div style={{ marginTop:24 }}>
+                  <h4 style={{ marginBottom:10, fontSize:'0.9rem', color:'var(--text-muted)' }}>
+                    Previous Personal Imports
+                  </h4>
+                  {(childLists[currentChild.id] || []).map(list => {
+                    const isActive = activeAssignments[currentChild.id]?.listId === list.id;
+                    return (
+                      <div key={list.id}>
+                        <div style={{ display:'flex', alignItems:'center' }}>
+                          <div style={{ flex:1 }}>
+                            <ListRow list={{ ...list, ownerId: currentChild.id }}
+                              deletingId={deletingId}
+                              onRename={handleRename}
+                              onDelete={l => handleDelete(l, currentChild.id)}
+                              extra={
+                                isActive ? (
+                                  <span style={{ fontSize:'0.75rem', fontWeight:700, color:'var(--secondary)',
+                                    background:'#e3fff2', border:'1px solid var(--secondary)',
+                                    padding:'1px 8px', borderRadius:50 }}>
+                                    ✓ Active List
+                                  </span>
+                                ) : (
+                                  <button className="btn btn-ghost btn-sm" style={{ fontSize:'0.75rem' }}
+                                    disabled={importing}
+                                    onClick={() => handleAssignToChild(currentChild.id, list)}>
+                                    Use This
+                                  </button>
+                                )
+                              }
+                            />
+                          </div>
+                          <button className="btn btn-ghost btn-sm" style={{ fontSize:'0.75rem' }}
+                            onClick={() => toggleWordList(list.id)}>
+                            {expandedListId === list.id ? '▲ Hide' : '▼ Edit Words'}
+                          </button>
+                        </div>
+                        {expandedListId === list.id && (
+                          <div style={{ padding:'8px 0 12px 12px' }}>
+                            {expandLoading ? <p style={{ color:'var(--text-muted)', fontSize:'0.85rem' }}>Loading…</p>
+                              : expandedWords.map(w => (
+                                <div key={w.wordId} style={{ display:'flex', alignItems:'center', gap:8,
+                                  padding:'3px 0', borderBottom:'1px solid var(--border)' }}>
+                                  <span style={{ flex:1, fontWeight:600, fontSize:'0.85rem' }}>{w.word}</span>
+                                  <span style={{ fontSize:'0.78rem', color:'var(--text-muted)', flex:2,
+                                    overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{w.definition}</span>
+                                  <button className="btn btn-ghost btn-sm" style={{ fontSize:'0.72rem' }}
+                                    onClick={() => setEditWord({ word: w, listId: list.id })}>✏️</button>
+                                </div>
+                              ))
+                            }
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── CHILD SECTION 3: MANUAL WORD ENTRY ── */}
+          {activeSection === 'manual' && (
+            <div className="card" style={{ marginBottom:20 }}>
+              <h3 style={{ marginBottom:12 }}>
+                ✏️ Enter Words for {currentChild.name}
+              </h3>
+              <p style={{ fontSize:'0.88rem', color:'var(--text-muted)', marginBottom:16 }}>
+                Type in words and definitions manually to create a new word list for {currentChild.name}.
+              </p>
+              <button className="btn btn-primary" onClick={() => setShowAddWords(currentChild.id)}>
+                + Add Words Manually
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Manual Word Entry Modal */}
+      {showAddWords && (
+        <AddWordsModal
+          childId={showAddWords === 'shared' ? null : showAddWords}
+          childName={showAddWords === 'shared' ? 'Shared Library' : (childList.find(c => c.id === showAddWords)?.name || '')}
+          createdBy={profile.id}
+          scope={showAddWords === 'shared' ? 'admin' : 'child'}
+          onClose={() => setShowAddWords(null)}
+          onSaved={newList => {
+            handleWordsAdded(showAddWords, newList);
+            setShowAddWords(null);
+            showToast?.(`Created list "${newList.name}".`, 'success');
+          }}
+        />
+      )}
+
+      {/* Confirmation Dialog */}
       {confirmDialog && (
         <ConfirmModal {...confirmDialog} onCancel={() => setConfirmDialog(null)} />
       )}
 
+      {/* Word Edit Modal */}
       {editWord && (
-        <WordEditModal word={editWord.word} listId={editWord.listId}
+        <WordEditModal
+          word={editWord.word}
+          listId={editWord.listId}
           onClose={() => setEditWord(null)}
-          onSaved={w => handleWordSaved(w, editWord.listId)} />
+          onSaved={w => handleWordSaved(w, editWord.listId)}
+        />
       )}
 
-      {showAddWords && (
-        <AddWordsModal
-          childId={showAddWords}
-          childName={childList.find(c => c.id === showAddWords)?.name || ''}
-          createdBy={profile.id}
-          onClose={() => setShowAddWords(null)}
-          onSaved={newList => { handleWordsAdded(showAddWords, newList); setShowAddWords(null); }}
+      {/* Import Diff Modal for Updates */}
+      {diffData && (
+        <ImportDiffModal
+          listId={diffData.listId}
+          listName={diffData.listName}
+          existingWords={diffData.existingWords}
+          incomingWords={diffData.incomingWords}
+          onClose={() => setDiffData(null)}
+          onApplied={newCount => {
+            setAdminLists(prev => prev.map(l =>
+              l.id === diffData.listId ? { ...l, wordCount: newCount } : l
+            ));
+            delete listWordsCache.current[diffData.listId];
+            if (expandedListId === diffData.listId) {
+              DB.wordLists.getListWords(diffData.listId).then(words => {
+                listWordsCache.current[diffData.listId] = words;
+                setExpandedWords(words);
+              }).catch(() => {});
+            }
+            refreshWordListIfOnList(diffData.listId);
+            setDiffData(null);
+            showToast?.('Changes applied successfully.', 'success');
+          }}
         />
       )}
     </>
@@ -1226,9 +1755,8 @@ export default function WordLists() {
 
   return (
     <Layout>
-      {profile?.role === 'admin'  && <AdminWordLists  profile={profile} />}
-      {profile?.role === 'parent' && <ParentWordLists profile={profile} />}
-      {profile?.role === 'kid'    && <KidWordLists    profile={profile} />}
+      {(profile?.role === 'admin' || profile?.role === 'parent') && <ParentWordLists profile={profile} />}
+      {profile?.role === 'kid' && <KidWordLists profile={profile} />}
     </Layout>
   );
 }

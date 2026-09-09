@@ -104,14 +104,10 @@ export function AppProvider({ children }) {
         if (promoted) p = promoted;
       }
 
-      if (p.role === 'admin') {
-        // Admin has no children and no active word list — they manage the shared library.
-        setProfile(p);
-      } else if (p.role === 'parent') {
+      if (p.role === 'admin' || p.role === 'parent') {
         setProfile(p);
         const kids = await DB.users.getChildren(p.id);
         setChildList(kids);
-        // Don't auto-select a child — parent starts on their own home screen
         if (kids.length > 0) {
           DB.wordLists.getChildrenHistoryCounts(kids.map(k => k.id))
             .then(setHistCounts).catch(() => {});

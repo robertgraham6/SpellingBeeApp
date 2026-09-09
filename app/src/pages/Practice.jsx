@@ -2,39 +2,28 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext.jsx';
 import Layout from '../components/Layout.jsx';
+import { playWordAudio, stopCurrentAudio } from '../lib/audio.js';
 
 /* ── Audio helper — reuses one Audio instance per session ─────── */
-// Module-level so the same object is shared across all mode components.
-// Reusing src avoids re-parsing the URL and reduces memory churn on long sessions.
-let _audio = null;
 let _audioTimer = null;
 
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Build the audio filename from normalizedWord + normalizedPronunciation.
-// When a pronunciation key is present the file is named:
-//   {normalizedWord}_{normalizedPronunciation}.mp3
-// When it is absent (empty string) the file is named:
-//   {normalizedWord}.mp3
-function audioFilename(word) {
-  const base = word.normalizedWord;
-  const pron = word.normalizedPronunciation;
-  return pron ? `${base}_${pron}.mp3` : `${base}.mp3`;
-}
-
 function playAudio(word, btnRef, immediate = false) {
-  if (!word?.normalizedWord) return;
+  if (!word) return;
   if (_audioTimer) { clearTimeout(_audioTimer); _audioTimer = null; }
-  if (_audio) { _audio.pause(); _audio.onended = null; _audio.onerror = null; }
+  stopCurrentAudio();
   if (btnRef?.current) btnRef.current.disabled = true;
 
   const fire = () => {
-    _audio = new Audio(`/audio/${audioFilename(word)}`);
-    _audio.onended = () => { if (btnRef?.current) btnRef.current.disabled = false; };
-    _audio.onerror = () => { if (btnRef?.current) btnRef.current.disabled = false; };
-    _audio.play().catch(() => { if (btnRef?.current) btnRef.current.disabled = false; });
+    playWordAudio(word, {
+      btnRef,
+      onStart: () => { if (btnRef?.current) btnRef.current.disabled = true; },
+      onEnd:   () => { if (btnRef?.current) btnRef.current.disabled = false; },
+      onError: () => { if (btnRef?.current) btnRef.current.disabled = false; },
+    });
   };
 
   if (immediate) { fire(); }
@@ -266,7 +255,7 @@ export default function Practice() {
     return () => {
       flushPendingRef.current?.();
       if (_audioTimer) { clearTimeout(_audioTimer); _audioTimer = null; }
-      if (_audio) { _audio.pause(); _audio.onended = null; _audio.onerror = null; _audio = null; }
+      stopCurrentAudio();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

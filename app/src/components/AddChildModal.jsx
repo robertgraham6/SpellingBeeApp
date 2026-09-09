@@ -7,6 +7,7 @@ export default function AddChildModal({ onClose }) {
   const { profile } = useApp();
   const [name,     setName]     = useState('');
   const [avatar,   setAvatar]   = useState(AVATARS[0]);
+  const [role,     setRole]     = useState('kid');
   const [email,    setEmail]    = useState('');
   const [useEmail, setUseEmail] = useState(false);
   const [saving,   setSaving]   = useState(false);
@@ -24,7 +25,7 @@ export default function AddChildModal({ onClose }) {
         parent_id:   profile.id,
         name:        name.trim(),
         avatar,
-        role:        'kid',
+        role,
         access_type: useEmail ? 'email' : 'local',
         email:       useEmail ? email.trim().toLowerCase() : null,
         last_mode:   'spelling',
@@ -58,6 +59,18 @@ export default function AddChildModal({ onClose }) {
               borderRadius:8, cursor:'pointer', padding:4,
             }}>{a}</button>
           ))}
+        </div>
+
+        <label className="field-label" style={{ marginBottom:8 }}>Role</label>
+        <div style={{ display:'flex', gap:8, marginBottom:16 }}>
+          <button type="button" className={`btn btn-sm ${role === 'kid' ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setRole('kid')} style={{ flex:1 }}>
+            🧒 Child
+          </button>
+          <button type="button" className={`btn btn-sm ${role === 'admin' ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => { setRole('admin'); if (avatar === AVATARS[0]) setAvatar('🛡️'); }} style={{ flex:1 }}>
+            🛡️ Admin
+          </button>
         </div>
 
         <label className="field-label" style={{ marginBottom:8 }}>Account type</label>

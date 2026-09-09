@@ -7,19 +7,29 @@ const cors        = require('cors');
 const helmet      = require('helmet');
 
 const PORT      = process.env.PORT      || 3000;
-const AUDIO_DIR = process.env.AUDIO_DIR || 'C:\\Users\\Robert\\Downloads\\AudioFiles\\2026';
+
+const candidateAudioDirs = [
+  process.env.AUDIO_DIR,
+  path.join(__dirname, 'audio'),
+  path.join(__dirname, 'SpellingBeeApp', 'audio'),
+  path.join(process.cwd(), 'audio'),
+  path.join(process.cwd(), 'SpellingBeeApp', 'audio'),
+  'C:\\Users\\Robert\\Downloads\\AudioFiles\\2026',
+].filter(Boolean);
+
+const AUDIO_DIR = candidateAudioDirs.find(d => {
+  try { return fs.existsSync(d); } catch { return false; }
+}) || candidateAudioDirs[0];
+
 const DIST      = path.join(__dirname, 'app', 'dist');
 
 
 // Resolve CORS origins once at startup so the value is logged and auditable.
-// false  → CORS headers are never sent; same-origin requests still work fine,
-//          but cross-origin preflight will fail with no useful browser error.
-// Set ALLOWED_ORIGINS to a comma-separated list of origins (e.g.
-// "https://app.example.com,https://staging.example.com") whenever the React
-// front-end is served from a different origin than this server.
+// Set ALLOWED_ORIGINS to a comma-separated list of origins if specific origins are needed.
+// Defaults to '*' so client apps on dev/staging can access audio and endpoints.
 const CORS_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-  : false;
+  : '*';
 
 // Fail fast if the Vite build hasn't run — better than a silent 500 on
 // every page request after a botched deploy.
@@ -51,14 +61,14 @@ app.use(helmet({
       styleSrc:    ["'self'", 'https://fonts.googleapis.com'],
       fontSrc:     ["'self'", 'https://fonts.gstatic.com'],
       imgSrc:      ["'self'", 'data:'],
-      // Explicitly allow audio served from this origin — without mediaSrc
-      // the browser blocks new Audio('/audio/...') even though defaultSrc
-      // is 'self'. Required for practice mode audio playback.
-      mediaSrc:    ["'self'"],
+      // Explicitly allow audio served from this origin and spellingbeetest.online
+      // Required for practice mode and word detail audio playback.
+      mediaSrc:    ["'self'", 'https://spellingbeetest.online'],
       // Allow the browser to connect to Supabase (auth, database, realtime),
       // Cloudflare's analytics beacon, and itself (audio files, API calls).
       connectSrc:  [
         "'self'",
+        'https://spellingbeetest.online',
         ...(SUPABASE_URL ? [SUPABASE_URL] : []),
         'https://static.cloudflareinsights.com',
         'https://cloudflareinsights.com',
@@ -103,30 +113,54 @@ const audioLimiter = rateLimit({
   message: { error: 'Too many audio requests \u2014 please slow down.' }
 });
 
-app.get('/audio/:filename', audioLimiter, (req, res) => {
-  const filename = req.params.filename.toLowerCase().replace(/[^a-z0-9_\-.]/g, '');
+function serveAudioFile(req, res) {
+  const rawParam = req.params.filename || '';
+  const filename = rawParam.toLowerCase().replace(/[^a-z0-9_\-.]/g, '');
   if (!filename || !filename.endsWith('.mp3')) return res.status(400).end();
 
-  // Resolve both paths so the comparison works correctly on Windows.
-  const resolvedDir = path.resolve(AUDIO_DIR);
-  const filePath    = path.resolve(AUDIO_DIR, filename);
-  if (!filePath.startsWith(resolvedDir + path.sep) &&
-      filePath !== resolvedDir) return res.status(403).end();
+  // Try configured AUDIO_DIR first, then any other candidate audio directories
+  const searchDirs = [
+    AUDIO_DIR,
+    path.join(__dirname, 'audio'),
+    path.join(__dirname, 'SpellingBeeApp', 'audio'),
+    path.join(process.cwd(), 'audio'),
+    path.join(process.cwd(), 'SpellingBeeApp', 'audio'),
+  ].filter((d, i, arr) => d && arr.indexOf(d) === i);
 
-  // Use fs.stat + createReadStream instead of sendFile — more reliable
-  // on Windows where sendFile can fail with ENOENT despite the file existing.
-  fs.stat(filePath, (statErr, stat) => {
+  let targetPath = null;
+  for (const dir of searchDirs) {
+    try {
+      const resolvedDir = path.resolve(dir);
+      const candidatePath = path.resolve(dir, filename);
+      if ((candidatePath.startsWith(resolvedDir + path.sep) || candidatePath === resolvedDir) && fs.existsSync(candidatePath)) {
+        targetPath = candidatePath;
+        break;
+      }
+    } catch {
+      // Continue to next directory
+    }
+  }
+
+  if (!targetPath) {
+    return res.status(404).end();
+  }
+
+  fs.stat(targetPath, (statErr, stat) => {
     if (statErr) {
       return res.status(statErr.code === 'ENOENT' ? 404 : 500).end();
     }
+    res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     res.setHeader('Content-Type', 'audio/mpeg');
     res.setHeader('Content-Length', stat.size);
-    const stream = fs.createReadStream(filePath);
+    const stream = fs.createReadStream(targetPath);
     stream.on('error', () => { if (!res.headersSent) res.status(500).end(); });
     stream.pipe(res);
   });
-});
+}
+
+app.get('/audio/:filename', audioLimiter, serveAudioFile);
+app.get('/:filename([a-z0-9_\\-]+\\.mp3)', audioLimiter, serveAudioFile);
 
 // ── React Router fallback ─────────────────────────────────────────────────────
 app.get('/{*splat}', (_req, res) => {

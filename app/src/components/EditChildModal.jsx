@@ -5,6 +5,7 @@ import { AVATARS } from '../lib/constants.js';
 export default function EditChildModal({ child, onClose }) {
   const [name,   setName]   = useState(child.name);
   const [avatar, setAvatar] = useState(child.avatar);
+  const [role,   setRole]   = useState(child.role || 'kid');
   const [saving, setSaving] = useState(false);
   const [err,    setErr]    = useState('');
 
@@ -13,7 +14,7 @@ export default function EditChildModal({ child, onClose }) {
     setSaving(true);
     setErr('');
     try {
-      const updated = await DB.users.update(child.id, { name: name.trim(), avatar });
+      const updated = await DB.users.update(child.id, { name: name.trim(), avatar, role });
       onClose(updated);
     } catch (e) {
       setErr(e.message);
@@ -25,7 +26,7 @@ export default function EditChildModal({ child, onClose }) {
   return (
     <div className="modal-backdrop">
       <div className="modal">
-        <div className="modal-title">Edit Child</div>
+        <div className="modal-title">Edit Profile</div>
         {err && <p style={{ color: 'var(--danger)', marginBottom: 12 }}>{err}</p>}
         <label className="field-label">Name</label>
         <input
@@ -50,6 +51,25 @@ export default function EditChildModal({ child, onClose }) {
               }}
             >{a}</button>
           ))}
+        </div>
+        <label className="field-label" style={{ marginBottom: 8 }}>Role</label>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+          <button
+            type="button"
+            className={`btn btn-sm ${role === 'kid' ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setRole('kid')}
+            style={{ flex: 1 }}
+          >
+            🧒 Child
+          </button>
+          <button
+            type="button"
+            className={`btn btn-sm ${role === 'admin' ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setRole('admin')}
+            style={{ flex: 1 }}
+          >
+            🛡️ Admin
+          </button>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-ghost btn-full" onClick={() => onClose(null)}>Cancel</button>

@@ -6,8 +6,12 @@ import { DB } from '../lib/db.js';
 // separator and a definition:
 //   ephemeral
 //   ephemeral | lasting for a very short time
-export default function AddWordsModal({ childId, childName, createdBy, onClose, onSaved }) {
-  const [listName, setListName] = useState(`${childName}'s List ${new Date().toLocaleDateString()}`);
+export default function AddWordsModal({ childId, childName, createdBy, onClose, onSaved, scope = 'child' }) {
+  const [listName, setListName] = useState(
+    scope === 'admin'
+      ? `Shared List ${new Date().toLocaleDateString()}`
+      : `${childName}'s List ${new Date().toLocaleDateString()}`
+  );
   const [rawText,  setRawText]  = useState('');
   const [saving,   setSaving]   = useState(false);
   const [error,    setError]    = useState('');
@@ -32,8 +36,14 @@ export default function AddWordsModal({ childId, childName, createdBy, onClose, 
     if (parsed.length === 0) return setError('Please enter at least one word.');
     setSaving(true); setError('');
     try {
-      const list = await DB.wordLists.createManual(createdBy, childId, listName.trim(), parsed);
-      onSaved({ ...list, wordCount: parsed.length });
+      const list = await DB.wordLists.createManual(
+        createdBy,
+        scope === 'admin' ? null : childId,
+        listName.trim(),
+        parsed,
+        scope
+      );
+      onSaved({ ...list, wordCount: parsed.length, scope });
     } catch (e) {
       setError(e.message || 'Could not save the list.');
       setSaving(false);
@@ -43,7 +53,9 @@ export default function AddWordsModal({ childId, childName, createdBy, onClose, 
   return (
     <div className="modal-backdrop">
       <div className="modal" style={{ maxWidth: 520 }}>
-        <div className="modal-title">Add Words for {childName}</div>
+        <div className="modal-title">
+          {scope === 'admin' ? 'Add Words to Shared Library' : `Add Words for ${childName}`}
+        </div>
 
         {error && (
           <p style={{ color: 'var(--danger)', fontSize: '0.88rem',

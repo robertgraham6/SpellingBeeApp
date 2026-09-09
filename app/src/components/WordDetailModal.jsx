@@ -1,14 +1,15 @@
-import { useRef, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext.jsx';
 import { wasEverMissed } from '../lib/normalize.js';
+import { playWordAudio, stopCurrentAudio } from '../lib/audio.js';
 
 export default function WordDetailModal({ word, onClose, onPrev, onNext, position }) {
   const { history, initialHistory, ratings, recordHistory, recordRating } = useApp();
+  const [isPlaying, setIsPlaying] = useState(false);
   const wordId     = word.wordId;
   const status     = history[wordId];
   const rating     = ratings[wordId] || 0;
   const everMissed = wasEverMissed(word, initialHistory);
-  const audioRef   = useRef(null);
 
   // Stop audio and handle keyboard navigation on mount
   useEffect(() => {
@@ -20,22 +21,23 @@ export default function WordDetailModal({ word, onClose, onPrev, onNext, positio
     document.addEventListener('keydown', handleKey);
     return () => {
       document.removeEventListener('keydown', handleKey);
-      if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+      stopCurrentAudio();
     };
   }, [onPrev, onNext, onClose]);
 
-  function audioFilename() {
-    const pron = word.normalizedPronunciation;
-    return pron
-      ? `${word.normalizedWord}_${pron}.mp3`
-      : `${word.normalizedWord}.mp3`;
-  }
+  useEffect(() => {
+    setIsPlaying(false);
+    stopCurrentAudio();
+  }, [word]);
 
   function playAudio() {
-    if (!word.normalizedWord) return;
-    if (audioRef.current) audioRef.current.pause();
-    audioRef.current = new Audio(`/audio/${audioFilename()}`);
-    audioRef.current.play().catch(() => {});
+    if (!word) return;
+    setIsPlaying(true);
+    playWordAudio(word, {
+      onStart: () => setIsPlaying(true),
+      onEnd:   () => setIsPlaying(false),
+      onError: () => setIsPlaying(false),
+    });
   }
 
   async function markStatus(s) {
@@ -77,7 +79,13 @@ export default function WordDetailModal({ word, onClose, onPrev, onNext, positio
         </div>
 
         <div style={{ textAlign:'center', marginBottom:16 }}>
-          <button className="btn btn-outline btn-sm" onClick={playAudio}>▶️ Play Audio</button>
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={playAudio}
+            disabled={isPlaying}
+          >
+            {isPlaying ? '🔊 Playing…' : '▶️ Play Audio'}
+          </button>
         </div>
 
         <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'0.9rem', marginBottom:20 }}>
