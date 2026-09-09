@@ -1,4 +1,4 @@
-import { supabase } from './supabase.js';
+import { supabase, isSupabaseConfigured } from './supabase.js';
 import { normalizeWord, normalizePronunciation } from './normalize.js';
 
 // ── Per-user word-list caches (localStorage, survive page refresh) ────────────
@@ -85,6 +85,9 @@ export function childListCacheInvalidate(childId) {
 export const DB = {
   auth: {
     async signInWithGoogle() {
+      if (!isSupabaseConfigured) {
+        throw new Error('Supabase is not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in settings or environment variables.');
+      }
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: { redirectTo: window.location.origin + '/login' }
@@ -92,6 +95,9 @@ export const DB = {
       if (error) throw error;
     },
     async signUpWithEmail(email, password) {
+      if (!isSupabaseConfigured) {
+        throw new Error('Supabase is not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in settings or environment variables.');
+      }
       const { data, error } = await supabase.auth.signUp({
         email: email.trim().toLowerCase(),
         password,
@@ -101,6 +107,9 @@ export const DB = {
       return data;
     },
     async signInWithEmail(email, password) {
+      if (!isSupabaseConfigured) {
+        throw new Error('Supabase is not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in settings or environment variables.');
+      }
       const { data, error } = await supabase.auth.signInWithPassword({
         email: email.trim().toLowerCase(),
         password,
@@ -109,6 +118,7 @@ export const DB = {
       return data;
     },
     async signOut() {
+      if (!isSupabaseConfigured) return;
       const { error } = await supabase.auth.signOut();
       if (error) throw error;
     },

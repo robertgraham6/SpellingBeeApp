@@ -19,11 +19,8 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
-    // Proxy /audio requests to the Express server during development
-    // so you don't need to set ALLOWED_ORIGINS
-    proxy: {
-      '/audio': 'http://localhost:3000',
-    },
+    host: '0.0.0.0',
+    port: 3000,
+    allowedHosts: true,
   },
 });

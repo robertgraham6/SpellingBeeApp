@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { DB } from '../lib/db.js';
 import { useApp } from '../context/AppContext.jsx';
+import { isSupabaseConfigured } from '../lib/supabase.js';
 
 // 'signin' | 'signup'
 export default function Landing() {
@@ -122,6 +123,12 @@ export default function Landing() {
             Create account
           </button>
         </div>
+
+        {!isSupabaseConfigured && (
+          <div style={{ background: '#fff9e6', border: '1px solid #f0a500', borderRadius: 8, padding: '10px 12px', marginBottom: 16, fontSize: '0.82rem', color: '#945c00', lineHeight: 1.5 }}>
+            <strong>Configuration needed:</strong> Set <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> in project settings to connect your Supabase project.
+          </div>
+        )}
 
         {error && (
           <p style={{ color: 'var(--danger)', fontSize: '0.85rem',

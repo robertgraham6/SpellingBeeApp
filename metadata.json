@@ -1,0 +1,6 @@
+{
+  "name": "Spelling Bee Trainer",
+  "description": "Practice spelling bee words with audio, flashcards, and progress tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
